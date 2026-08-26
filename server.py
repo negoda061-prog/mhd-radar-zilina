@@ -2,6 +2,7 @@ import json
 import urllib.request
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -46,6 +47,64 @@ def get_live_dpmz_buses():
 
 def calculate_distance_meters(lat1, lon1, lat2, lon2):
     return (((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5) * 111000
+
+
+@app.get("/", response_class=HTMLResponse)
+def get_map_page():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>MHD Radar Žilina</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+            #map { height: 100vh; width: 100%; margin: 0; padding: 0; }
+            body { margin: 0; }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            var map = L.map('map').setView([49.2231, 18.7394], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19
+            }).addTo(map);
+
+            var markers = {};
+
+            function updateMap() {
+                fetch('/map-data')
+                    .then(res => res.json())
+                    .then(data => {
+                        data.forEach(bus => {
+                            var color = bus.has_inspector ? 'red' : 'green';
+                            var customIcon = L.divIcon({
+                                className: 'custom-div-icon',
+                                html: "<div style='background-color:" + color + ";width:16px;height:16px;border-radius:50%;border:2px solid white;'></div>",
+                                iconSize: [20, 20]
+                            });
+
+                            if (markers[bus.vehicle_id]) {
+                                markers[bus.vehicle_id].setLatLng([bus.lat, bus.lng]);
+                            } else {
+                                var m = L.marker([bus.lat, bus.lng], {icon: customIcon})
+                                    .bindPopup("<b>Linka: " + bus.line + "</b><br>ID: " + bus.vehicle_id)
+                                    .addTo(map);
+                                markers[bus.vehicle_id] = m;
+                            }
+                        });
+                    });
+            }
+
+            updateMap();
+            setInterval(updateMap, 5000);
+        </script>
+    </body>
+    </html>
+    """
 
 
 @app.post("/report")
