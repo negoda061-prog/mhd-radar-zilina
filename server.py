@@ -1,10 +1,8 @@
-import math
-from datetime import datetime, timedelta
+import json
+import urllib.request
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import uvicorn
 
 app = FastAPI()
 
@@ -20,94 +18,41 @@ active_reports = {}
 
 
 class ReportRequest(BaseModel):
-    user_id: str
     latitude: float
     longitude: float
-    detection_type: str
-
-
-def calculate_distance_meters(lat1, lon1, lat2, lon2):
-    R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(delta_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    )
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def get_live_dpmz_buses():
-    return [
-        {
-            "vehicle_id": "DPMZ_204",
-            "line": "6",
-            "lat": 49.2231,
-            "lng": 18.7394,
-            "heading": "Vlcince -> Hliny",
-        },
-        {
-            "vehicle_id": "DPMZ_108",
-            "line": "1",
-            "lat": 49.2105,
-            "lng": 18.7450,
-            "heading": "Solinky -> Centrum",
-        },
-        {
-            "vehicle_id": "DPMZ_312",
-            "line": "4",
-            "lat": 49.2200,
-            "lng": 18.7550,
-            "heading": "Vlcince -> Zavodie",
-        },
-    ]
+    url = "https://www.dpmz.sk/api/vehicles/"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            buses = []
+            for item in data.get("vehicles", []):
+                buses.append(
+                    {
+                        "vehicle_id": str(item.get("id")),
+                        "line": str(item.get("line_name", "?")),
+                        "lat": float(item.get("lat")),
+                        "lng": float(item.get("lng")),
+                    }
+                )
+            return buses
+    except Exception as e:
+        print(f"Chyba pri stahovani DPMZ API: {e}")
+        return []
 
 
-@app.get("/", response_class=HTMLResponse)
-def get_map():
-    return """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>MHD Radar Zilina</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>body { margin: 0; } #map { height: 100vh; }</style>
-</head>
-<body>
-    <div id="map"></div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        const map = L.map('map').setView([49.2231, 18.7394], 14);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-        let markers = [];
-
-        function load() {
-            fetch('/map-data')
-                .then(r => r.json())
-                .then(buses => {
-                    markers.forEach(m => map.removeLayer(m));
-                    markers = [];
-                    buses.forEach(b => {
-                        let c = b.has_inspector ? 'red' : 'green';
-                        let m = L.circleMarker([b.lat, b.lng], {color: c, fillColor: c, fillOpacity: 0.8, radius: 12}).addTo(map);
-                        m.bindPopup('<b>Linka ' + b.line + '</b> (' + b.vehicle_id + ')<br>' + (b.has_inspector ? '🚨 REVÍZOR V SPOJI!' : '✅ V poriadku'));
-                        markers.push(m);
-                    });
-                });
-        }
-        load();
-        setInterval(load, 2000);
-    </script>
-</body>
-</html>"""
+def calculate_distance_meters(lat1, lon1, lat2, lon2):
+    return (((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5) * 111000
 
 
 @app.post("/report")
 def report_inspector(report: ReportRequest):
     buses = get_live_dpmz_buses()
     matched = None
-    min_d = 100
+    min_d = 200
     for b in buses:
         d = calculate_distance_meters(
             report.latitude, report.longitude, b["lat"], b["lng"]
@@ -115,8 +60,10 @@ def report_inspector(report: ReportRequest):
         if d < min_d:
             min_d = d
             matched = b
+
     if not matched:
         raise HTTPException(status_code=404, detail="Bus not found")
+
     active_reports[matched["vehicle_id"]] = {
         "line": matched["line"],
         "vehicle_id": matched["vehicle_id"],
@@ -133,4 +80,6 @@ def get_map_data():
 
 
 if __name__ == "__main__":
+    import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
