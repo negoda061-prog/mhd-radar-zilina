@@ -1,5 +1,6 @@
-import json
-import urllib.request
+import math
+import random
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -17,36 +18,43 @@ app.add_middleware(
 
 active_reports = {}
 
+# Zoznam reálnych liniek Žiliny (vrátane linky 50)
+LINES_DATA = [
+    {"line": "50", "lat": 49.2150, "lng": 18.7450},
+    {"line": "50", "lat": 49.2280, "lng": 18.7300},
+    {"line": "1", "lat": 49.2020, "lng": 18.7400},
+    {"line": "3", "lat": 49.2100, "lng": 18.7600},
+    {"line": "4", "lat": 49.2350, "lng": 18.7450},
+    {"line": "6", "lat": 49.2050, "lng": 18.7300},
+    {"line": "7", "lat": 49.2200, "lng": 18.7500},
+    {"line": "14", "lat": 49.2400, "lng": 18.7150},
+    {"line": "21", "lat": 49.2250, "lng": 18.7700},
+    {"line": "27", "lat": 49.1980, "lng": 18.7480},
+]
+
+buses_db = []
+for i, item in enumerate(LINES_DATA):
+    buses_db.append(
+        {
+            "vehicle_id": str(101 + i),
+            "line": item["line"],
+            "lat": item["lat"] + random.uniform(-0.005, 0.005),
+            "lng": item["lng"] + random.uniform(-0.005, 0.005),
+        }
+    )
+
 
 class ReportRequest(BaseModel):
     latitude: float
     longitude: float
 
 
-def get_live_dpmz_buses():
-    url = "https://www.dpmz.sk/api/vehicles/"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            buses = []
-            for item in data.get("vehicles", []):
-                buses.append(
-                    {
-                        "vehicle_id": str(item.get("id")),
-                        "line": str(item.get("line_name", "?")),
-                        "lat": float(item.get("lat")),
-                        "lng": float(item.get("lng")),
-                    }
-                )
-            return buses
-    except Exception as e:
-        print(f"Chyba pri stahovani DPMZ API: {e}")
-        return []
-
-
-def calculate_distance_meters(lat1, lon1, lat2, lon2):
-    return (((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5) * 111000
+def update_bus_positions():
+    t = time.time()
+    for b in buses_db:
+        speed = 0.0001
+        b["lat"] += math.sin(t + int(b["vehicle_id"])) * speed
+        b["lng"] += math.cos(t + int(b["vehicle_id"])) * speed
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -80,18 +88,18 @@ def get_map_page():
                     .then(res => res.json())
                     .then(data => {
                         data.forEach(bus => {
-                            var color = bus.has_inspector ? 'red' : 'green';
+                            var color = bus.has_inspector ? '#e74c3c' : '#2ecc71';
                             var customIcon = L.divIcon({
                                 className: 'custom-div-icon',
-                                html: "<div style='background-color:" + color + ";width:16px;height:16px;border-radius:50%;border:2px solid white;'></div>",
-                                iconSize: [20, 20]
+                                html: "<div style='background-color:" + color + ";width:22px;height:22px;border-radius:50%;border:2px solid white;box-shadow:0 0 5px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold;'>" + bus.line + "</div>",
+                                iconSize: [24, 24]
                             });
 
                             if (markers[bus.vehicle_id]) {
                                 markers[bus.vehicle_id].setLatLng([bus.lat, bus.lng]);
                             } else {
                                 var m = L.marker([bus.lat, bus.lng], {icon: customIcon})
-                                    .bindPopup("<b>Linka: " + bus.line + "</b><br>ID: " + bus.vehicle_id)
+                                    .bindPopup("<b>Linka: " + bus.line + "</b><br>Vozidlo ID: " + bus.vehicle_id)
                                     .addTo(map);
                                 markers[bus.vehicle_id] = m;
                             }
@@ -100,7 +108,7 @@ def get_map_page():
             }
 
             updateMap();
-            setInterval(updateMap, 5000);
+            setInterval(updateMap, 3000);
         </script>
     </body>
     </html>
@@ -109,33 +117,34 @@ def get_map_page():
 
 @app.post("/report")
 def report_inspector(report: ReportRequest):
-    buses = get_live_dpmz_buses()
+    update_bus_positions()
     matched = None
-    min_d = 200
-    for b in buses:
-        d = calculate_distance_meters(
-            report.latitude, report.longitude, b["lat"], b["lng"]
+    min_d = 0.005
+    for b in buses_db:
+        d = math.sqrt(
+            (report.latitude - b["lat"]) ** 2
+            + (report.longitude - b["lng"]) ** 2
         )
         if d < min_d:
             min_d = d
             matched = b
 
     if not matched:
-        raise HTTPException(status_code=404, detail="Bus not found")
+        raise HTTPException(status_code=404, detail="Autobus nebol v blízkosti")
 
-    active_reports[matched["vehicle_id"]] = {
-        "line": matched["line"],
-        "vehicle_id": matched["vehicle_id"],
-    }
+    active_reports[matched["vehicle_id"]] = True
     return {"status": "success"}
 
 
 @app.get("/map-data")
 def get_map_data():
-    buses = get_live_dpmz_buses()
-    for b in buses:
-        b["has_inspector"] = b["vehicle_id"] in active_reports
-    return buses
+    update_bus_positions()
+    res = []
+    for b in buses_db:
+        item = b.copy()
+        item["has_inspector"] = b["vehicle_id"] in active_reports
+        res.append(item)
+    return res
 
 
 if __name__ == "__main__":
