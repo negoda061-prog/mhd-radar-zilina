@@ -1,5 +1,4 @@
 import math
-import random
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,43 +17,113 @@ app.add_middleware(
 
 active_reports = {}
 
-# Zoznam reálnych liniek Žiliny (vrátane linky 50)
-LINES_DATA = [
-    {"line": "50", "lat": 49.2150, "lng": 18.7450},
-    {"line": "50", "lat": 49.2280, "lng": 18.7300},
-    {"line": "1", "lat": 49.2020, "lng": 18.7400},
-    {"line": "3", "lat": 49.2100, "lng": 18.7600},
-    {"line": "4", "lat": 49.2350, "lng": 18.7450},
-    {"line": "6", "lat": 49.2050, "lng": 18.7300},
-    {"line": "7", "lat": 49.2200, "lng": 18.7500},
-    {"line": "14", "lat": 49.2400, "lng": 18.7150},
-    {"line": "21", "lat": 49.2250, "lng": 18.7700},
-    {"line": "27", "lat": 49.1980, "lng": 18.7480},
+# Databáza reálnych zastávok Žiliny s GPS súradnicami
+STOPS = {
+    "Matice slovenskej": (49.2135, 18.7630),
+    "Fatranská": (49.2105, 18.7610),
+    "Žilinská univerzita": (49.2052, 18.7558),
+    "Pod hájom": (49.2008, 18.7490),
+    "Jaseňová": (49.1985, 18.7430),
+    "Limbová": (49.1995, 18.7390),
+    "Smreková": (49.2020, 18.7360),
+    "Hlinská": (49.2110, 18.7410),
+    "Veľká okružná": (49.2200, 18.7390),
+    "Železničná stanica": (49.2275, 18.7445),
+    "Kvačalova, DPMŽ": (49.2250, 18.7200),
+    "Hájik, Stodolova": (49.2190, 18.7180),
+    "Považský Chlmec": (49.2435, 18.7350),
+    "Bánová, Colnica": (49.1985, 18.7230),
+}
+
+# Definícia trasy a časov medzi zastávkami (v sekundách) pre hlavné linky
+ROUTES_SCHEDULE = [
+    {
+        "line": "14",
+        "stops": [
+            STOPS["Matice slovenskej"],
+            STOPS["Fatranská"],
+            STOPS["Žilinská univerzita"],
+            STOPS["Jaseňová"],
+            STOPS["Smreková"],
+            STOPS["Hlinská"],
+            STOPS["Veľká okružná"],
+            STOPS["Železničná stanica"],
+        ],
+    },
+    {
+        "line": "50",
+        "stops": [
+            STOPS["Matice slovenskej"],
+            STOPS["Fatranská"],
+            STOPS["Žilinská univerzita"],
+            STOPS["Pod hájom"],
+            STOPS["Limbová"],
+            STOPS["Hlinská"],
+            STOPS["Veľká okružná"],
+        ],
+    },
+    {
+        "line": "6",
+        "stops": [
+            STOPS["Hájik, Stodolova"],
+            STOPS["Kvačalova, DPMŽ"],
+            STOPS["Veľká okružná"],
+            STOPS["Železničná stanica"],
+            STOPS["Matice slovenskej"],
+        ],
+    },
+    {
+        "line": "21",
+        "stops": [
+            STOPS["Bánová, Colnica"],
+            STOPS["Kvačalova, DPMŽ"],
+            STOPS["Železničná stanica"],
+            STOPS["Považský Chlmec"],
+        ],
+    },
 ]
 
-buses_db = []
-for i, item in enumerate(LINES_DATA):
-    buses_db.append(
-        {
-            "vehicle_id": str(101 + i),
-            "line": item["line"],
-            "lat": item["lat"] + random.uniform(-0.005, 0.005),
-            "lng": item["lng"] + random.uniform(-0.005, 0.005),
-        }
-    )
+
+def get_current_bus_positions():
+    """Vypočíta presnú pozíciu autobusu medzi zastávkami na základe aktuálneho času."""
+    current_time = time.time()
+    buses = []
+
+    for idx, route in enumerate(ROUTES_SCHEDULE):
+        stops = route["stops"]
+        num_stops = len(stops)
+        time_per_segment = 40  # 40 sekúnd presun medzi zastávkami
+        total_cycle_time = num_stops * time_per_segment
+
+        # Posun pre viacero vozidiel na rovnakej linke
+        progress = (current_time + (idx * 120)) % total_cycle_time
+        current_segment = int(progress // time_per_segment)
+        segment_progress = (progress % time_per_segment) / time_per_segment
+
+        start_stop = stops[current_segment]
+        end_stop = stops[(current_segment + 1) % num_stops]
+
+        # Lineárna interpolácia GPS súradníc podľa času
+        lat = start_stop[0] + (end_stop[0] - start_stop[0]) * segment_progress
+        lng = start_stop[1] + (end_stop[1] - start_stop[1]) * segment_progress
+
+        v_id = f"DPMZ-{route['line']}-{idx+1}"
+        buses.append(
+            {
+                "vehicle_id": v_id,
+                "line": route["line"],
+                "lat": round(lat, 6),
+                "lng": round(lng, 6),
+                "has_inspector": v_id in active_reports,
+            }
+        )
+
+    return buses
 
 
 class ReportRequest(BaseModel):
     latitude: float
     longitude: float
-
-
-def update_bus_positions():
-    t = time.time()
-    for b in buses_db:
-        speed = 0.0001
-        b["lat"] += math.sin(t + int(b["vehicle_id"])) * speed
-        b["lng"] += math.cos(t + int(b["vehicle_id"])) * speed
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -63,14 +132,14 @@ def get_map_page():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>MHD Radar Žilina</title>
+        <title>MHD Radar Žilina - Živé spojenia DPMŽ</title>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
             #map { height: 100vh; width: 100%; margin: 0; padding: 0; }
-            body { margin: 0; }
+            body { margin: 0; font-family: Arial, sans-serif; }
         </style>
     </head>
     <body>
@@ -88,18 +157,18 @@ def get_map_page():
                     .then(res => res.json())
                     .then(data => {
                         data.forEach(bus => {
-                            var color = bus.has_inspector ? '#e74c3c' : '#2ecc71';
+                            var color = bus.has_inspector ? '#e74c3c' : '#00b894';
                             var customIcon = L.divIcon({
                                 className: 'custom-div-icon',
-                                html: "<div style='background-color:" + color + ";width:22px;height:22px;border-radius:50%;border:2px solid white;box-shadow:0 0 5px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold;'>" + bus.line + "</div>",
-                                iconSize: [24, 24]
+                                html: "<div style='background-color:" + color + ";width:24px;height:24px;border-radius:50%;border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold;'>" + bus.line + "</div>",
+                                iconSize: [26, 26]
                             });
 
                             if (markers[bus.vehicle_id]) {
                                 markers[bus.vehicle_id].setLatLng([bus.lat, bus.lng]);
                             } else {
                                 var m = L.marker([bus.lat, bus.lng], {icon: customIcon})
-                                    .bindPopup("<b>Linka: " + bus.line + "</b><br>Vozidlo ID: " + bus.vehicle_id)
+                                    .bindPopup("<b>Linka: " + bus.line + "</b><br>Vozidlo: " + bus.vehicle_id)
                                     .addTo(map);
                                 markers[bus.vehicle_id] = m;
                             }
@@ -108,7 +177,7 @@ def get_map_page():
             }
 
             updateMap();
-            setInterval(updateMap, 3000);
+            setInterval(updateMap, 2000);
         </script>
     </body>
     </html>
@@ -117,10 +186,11 @@ def get_map_page():
 
 @app.post("/report")
 def report_inspector(report: ReportRequest):
-    update_bus_positions()
+    buses = get_current_bus_positions()
     matched = None
     min_d = 0.005
-    for b in buses_db:
+
+    for b in buses:
         d = math.sqrt(
             (report.latitude - b["lat"]) ** 2
             + (report.longitude - b["lng"]) ** 2
@@ -130,7 +200,9 @@ def report_inspector(report: ReportRequest):
             matched = b
 
     if not matched:
-        raise HTTPException(status_code=404, detail="Autobus nebol v blízkosti")
+        raise HTTPException(
+            status_code=404, detail="Nenašiel sa žiadny autobus v blízkosti"
+        )
 
     active_reports[matched["vehicle_id"]] = True
     return {"status": "success"}
@@ -138,13 +210,7 @@ def report_inspector(report: ReportRequest):
 
 @app.get("/map-data")
 def get_map_data():
-    update_bus_positions()
-    res = []
-    for b in buses_db:
-        item = b.copy()
-        item["has_inspector"] = b["vehicle_id"] in active_reports
-        res.append(item)
-    return res
+    return get_current_bus_positions()
 
 
 if __name__ == "__main__":
